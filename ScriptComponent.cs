@@ -163,6 +163,7 @@ public class ScriptMain : UserComponent
                     Row.Province = province;
                     Row.Country = country;
                     Row.Postal = postal;
+                    Row.GoogleID = place_id;
                 }
             }
             else
