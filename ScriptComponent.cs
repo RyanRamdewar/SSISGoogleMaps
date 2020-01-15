@@ -11,6 +11,8 @@ using System;
 using System.Data;
 using System.IO;
 using System.Net;
+using System.Text.RegularExpressions;
+using System.Threading;
 using System.Xml;
 using Microsoft.SqlServer.Dts.Pipeline.Wrapper;
 using Microsoft.SqlServer.Dts.Runtime.Wrapper;
@@ -91,27 +93,79 @@ public class ScriptMain : UserComponent
     /// <param name="Row">The row that is currently passing through the component</param>
     public override void Input0_ProcessInputRow(Input0Buffer Row)
     {
-        var xmlDoc = new XmlDocument();
-        string url = "https://maps.googleapis.com/maps/api/geocode/xml?address={0}&key={1}";
-        var wGet = WebRequest.Create(String.Format(url, Row.InternalAddress, Variables.webApiKey));
-        wGet.Method = WebRequestMethods.Http.Get;
-        var response = wGet.GetResponse();
-        var status = ((HttpWebResponse)response).StatusDescription;
-        if (status == "OK")
+        string place_id = null;
+        try
         {
-            // Open the stream using a StreamReader for easy access.
-            StreamReader reader = new StreamReader(response.GetResponseStream());
+            if(Row.AccountGUID == new Guid("6fbf51fc-43d2-e811-a96e-000d3aff2e32"))
+            {
+                place_id = null;
+            }
 
-            // Read the content fully up to the end.
-            string responseFromServer = reader.ReadToEnd();
-            // Clean up the streams.
-            reader.Close();
+            // check for full establishment name and address
+            var xmlDoc = new XmlDocument();
+            string url = "https://maps.googleapis.com/maps/api/geocode/xml?address={0}&key={1}";
+            string address = Regex.Replace(Row.FullInternalAddress, @"['\/~`\!@#\$%\^&\*\(\)_\-\+=\{\}\[\]\|;:""\<\>,\.\?\\]", "");
+            var wGet = WebRequest.Create(String.Format(url, address , Variables.webApiKey));
+            wGet.Method = WebRequestMethods.Http.Get;
+            var response = wGet.GetResponse();
+            var status = ((HttpWebResponse)response).StatusDescription;
+            if (status == "OK")
+            {
+                ReadResponse(Row, xmlDoc, response, out place_id);
+                response.Close();
+            }
 
-            xmlDoc.LoadXml(responseFromServer);
+            // check only address
+            if (place_id == null)
+            {
+                xmlDoc = new XmlDocument();
+                url = "https://maps.googleapis.com/maps/api/geocode/xml?address={0}&key={1}";
+                address = Row.InternalAddress1 + " " + Row.InternalAddress2 + " " + Row.InternalCity + " " + Row.InternalPostalCode;
+                address = Regex.Replace(address, @"['\/~`\!@#\$%\^&\*\(\)_\-\+=\{\}\[\]\|;:""\<\>,\.\?\\]", "");
+                wGet = WebRequest.Create(String.Format(url, address , Variables.webApiKey));
+                wGet.Method = WebRequestMethods.Http.Get;
+                response = wGet.GetResponse();
+                status = ((HttpWebResponse)response).StatusDescription;
 
-            string sts = xmlDoc.DocumentElement.SelectSingleNode("status").InnerText;
-            string place_id = "error";
-            if (sts != "ZERO_RESULTS")
+                if (status == "OK")
+                {
+                    ReadResponse(Row, xmlDoc, response, out place_id);
+                    response.Close();
+                }
+            }
+
+            // mark error if no place found
+            if (place_id == null || place_id.Trim() == "")
+            {
+                Row.GoogleID = "error";
+            }
+        }
+        catch(Exception ex)
+        {
+            this.ComponentMetaData.FireWarning(0, "Goggle Lookup", "Error message: " + ex.Message, String.Empty, 0);
+
+        }
+        // google limits 50 requests per second
+        Thread.Sleep(100);
+    }
+
+    private void ReadResponse(Input0Buffer Row, XmlDocument xmlDoc, WebResponse response, out string place_id)
+    {
+        place_id = null;
+        // Open the stream using a StreamReader for easy access.
+        StreamReader reader = new StreamReader(response.GetResponseStream());
+
+        // Read the content fully up to the end.
+        string responseFromServer = reader.ReadToEnd();
+        // Clean up the streams.
+        reader.Close();
+
+        xmlDoc.LoadXml(responseFromServer);
+
+        string sts = xmlDoc.DocumentElement.SelectSingleNode("status").InnerText;
+        if (sts != "ZERO_RESULTS")
+        {
+            try
             {
                 place_id = xmlDoc.DocumentElement.SelectSingleNode("/GeocodeResponse/result/place_id").InnerText;
 
@@ -125,6 +179,9 @@ public class ScriptMain : UserComponent
                     string postal = null;
                     string lat = null;
                     string lng = null;
+                    string phone;
+                    string webUrl;
+                    string name;
 
                     var address = xmlDoc.DocumentElement.SelectNodes("/GeocodeResponse/result/address_component");
                     foreach (XmlNode node in address)
@@ -155,6 +212,8 @@ public class ScriptMain : UserComponent
                     lat = xmlDoc.DocumentElement.SelectSingleNode("/GeocodeResponse/result/geometry/location/lat").InnerText;
                     lng = xmlDoc.DocumentElement.SelectSingleNode("/GeocodeResponse/result/geometry/location/lng").InnerText;
 
+                    getPlaceDetails(place_id, out name, out phone, out webUrl);
+
 
                     Row.Lat = decimal.Parse(lat);
                     Row.Lng = decimal.Parse(lng);
@@ -163,15 +222,53 @@ public class ScriptMain : UserComponent
                     Row.Province = province;
                     Row.Country = country;
                     Row.Postal = postal;
+                    Row.Name = name;
+                    Row.Phone = phone;
+                    Row.WebSite = webUrl;
+
                     Row.GoogleID = place_id;
                 }
             }
-            else
+            catch (Exception ex)
             {
-                Row.GoogleID = "error";
+                bool pbCancel = false;
+                this.ComponentMetaData.FireError(0, "Goggle Lookup[CRM_ID=" + Row.AccountGUID + "]", "Error message: " + ex.Message + "|  " + ex.InnerException.Message, String.Empty, 0, out pbCancel);
+
             }
         }
-        response.Close();
     }
+
+    private void getPlaceDetails(string placeID, out string name, out string phone, out string webUrl)
+    {
+        name = null;
+        phone = null;
+        webUrl = null;
+        var xmlDoc = new XmlDocument();
+        string url = "https://maps.googleapis.com/maps/api/place/details/xml?place_id={0}&fields=name,website,formatted_phone_number&key={1}";
+        var wGet = WebRequest.Create(String.Format(url, placeID, Variables.webApiKey));
+        wGet.Method = WebRequestMethods.Http.Get;
+        var response = wGet.GetResponse();
+        var status = ((HttpWebResponse)response).StatusDescription;
+
+        if (status == "OK")
+        {
+            // Open the stream using a StreamReader for easy access.
+            StreamReader reader = new StreamReader(response.GetResponseStream());
+
+            // Read the content fully up to the end.
+            string responseFromServer = reader.ReadToEnd();
+            // Clean up the streams.
+            reader.Close();
+
+            xmlDoc.LoadXml(responseFromServer);
+
+            name = xmlDoc.DocumentElement.SelectSingleNode("/PlaceDetailsResponse/result/name") != null ? xmlDoc.DocumentElement.SelectSingleNode("/PlaceDetailsResponse/result/name").InnerText : null;
+            phone = xmlDoc.DocumentElement.SelectSingleNode("/PlaceDetailsResponse/result/formatted_phone_number") != null ? xmlDoc.DocumentElement.SelectSingleNode("/PlaceDetailsResponse/result/formatted_phone_number").InnerText : null;
+            webUrl = xmlDoc.DocumentElement.SelectSingleNode("/PlaceDetailsResponse/result/website") != null ? xmlDoc.DocumentElement.SelectSingleNode("/PlaceDetailsResponse/result/website").InnerText : null;
+        }
+        response.Close();
+
+    }
+
 
 }
