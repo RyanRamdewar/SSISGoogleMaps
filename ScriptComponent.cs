@@ -96,7 +96,7 @@ public class ScriptMain : UserComponent
         string place_id = null;
         try
         {
-            //if (Row.AccountGUID == new Guid("6fbf51fc-43d2-e811-a96e-000d3aff2e32"))
+            //if (Row.AccountGUID == new Guid("826EA96C-ABD3-E811-A96D-000D3AFF2E34"))
             //{
             //    place_id = null;
             //}
@@ -146,7 +146,7 @@ public class ScriptMain : UserComponent
 
         }
         // google limits 50 requests per second
-        Thread.Sleep(100);
+        Thread.Sleep(20);
     }
 
     private void ReadResponse(Input0Buffer Row, XmlDocument xmlDoc, WebResponse response, bool getDetails, out string place_id)
@@ -173,6 +173,7 @@ public class ScriptMain : UserComponent
                 {
                     string streetNumber = null;
                     string streetName = null;
+                    string subpremise = null;
                     string city = null;
                     string province = null;
                     string country = null;
@@ -192,6 +193,9 @@ public class ScriptMain : UserComponent
                         {
                             case "street_number":
                                 streetNumber = node.SelectSingleNode("long_name").InnerText;
+                                break;
+                            case "subpremise":
+                                subpremise = node.SelectSingleNode("long_name").InnerText;
                                 break;
                             case "route":
                                 streetName = node.SelectSingleNode("long_name").InnerText;
@@ -223,6 +227,10 @@ public class ScriptMain : UserComponent
                     Row.Lat = decimal.Parse(lat);
                     Row.Lng = decimal.Parse(lng);
                     Row.Address1 = streetNumber + " " + streetName;
+                    if (subpremise != null)
+                    {
+                        Row.Address2 = "#" + subpremise;
+                    }
                     Row.City = city;
                     Row.Province = province;
                     Row.Country = country;
