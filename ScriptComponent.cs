@@ -111,7 +111,7 @@ public class ScriptMain : UserComponent
             var status = ((HttpWebResponse)response).StatusDescription;
             if (status == "OK")
             {
-                ReadResponse(Row, xmlDoc, response, true, out place_id);
+                ReadResponseAddress(Row, xmlDoc, response, true, out place_id);
                 response.Close();
             }
 
@@ -129,7 +129,7 @@ public class ScriptMain : UserComponent
 
                 if (status == "OK")
                 {
-                    ReadResponse(Row, xmlDoc, response, false, out place_id);
+                    ReadResponseAddress(Row, xmlDoc, response, false, out place_id);
                     response.Close();
                 }
             }
@@ -145,11 +145,40 @@ public class ScriptMain : UserComponent
             this.ComponentMetaData.FireWarning(0, "Goggle Lookup", "Error message: " + ex.Message, String.Empty, 0);
 
         }
+
+        if (Row.MarketID == 6)
+        {
+            try
+            {
+                // LCBO 33 Freeland St, Toronto, ON M5E 1L7
+                double oLat = 43.643510, oLng = -79.373114;
+
+                string dLat = !Row.Lat_IsNull ? Row.Lat : null;
+                string dLng = !Row.Long_IsNull ? Row.Long : null;
+
+                if (dLat != null && dLng != null)
+                {
+                    XmlDocument xmlDoc = new XmlDocument();
+                    String url = String.Format("https://maps.googleapis.com/maps/api/distancematrix/xml?origins={0},{1}&destinations={2},{3}&mode=driving&sensor=false&key={4}", oLat, oLng, dLat, dLng, Variables.webApiKey);
+                    var wGet = WebRequest.Create(url);
+                    wGet.Method = WebRequestMethods.Http.Get;
+                    var response = wGet.GetResponse();
+                    var status = ((HttpWebResponse)response).StatusDescription;
+                    if (status == "OK")
+                    {
+                        ReadResponseDistance(Row, xmlDoc, response);
+                        response.Close();
+                    }
+                }
+            }
+            catch { }
+
+        }
         // google limits 50 requests per second
         Thread.Sleep(20);
     }
 
-    private void ReadResponse(Input0Buffer Row, XmlDocument xmlDoc, WebResponse response, bool getDetails, out string place_id)
+    private void ReadResponseAddress(Input0Buffer Row, XmlDocument xmlDoc, WebResponse response, bool getDetails, out string place_id)
     {
         place_id = null;
         // Open the stream using a StreamReader for easy access.
@@ -224,8 +253,8 @@ public class ScriptMain : UserComponent
                         Row.WebSite = webUrl;
                     }
 
-                    Row.Lat = decimal.Parse(lat);
-                    Row.Lng = decimal.Parse(lng);
+                    Row.Lat = lat;
+                    Row.Long = lng;
                     Row.Address1 = streetNumber + " " + streetName;
                     if (subpremise != null)
                     {
@@ -237,7 +266,7 @@ public class ScriptMain : UserComponent
                     Row.Postal = postal;
                     Row.Name = name;
                     Row.Icon = icon;
-                                       
+
                     Row.GoogleID = place_id;
                 }
             }
@@ -284,5 +313,54 @@ public class ScriptMain : UserComponent
 
     }
 
+    private void ReadResponseDistance(Input0Buffer Row, XmlDocument xmlDoc, WebResponse response)
+    {
+        // Open the stream using a StreamReader for easy access.
+        StreamReader reader = new StreamReader(response.GetResponseStream());
+
+        // Read the content fully up to the end.
+        string responseFromServer = reader.ReadToEnd();
+        // Clean up the streams.
+        reader.Close();
+
+        xmlDoc.LoadXml(responseFromServer);
+
+        string sts = xmlDoc.DocumentElement.SelectSingleNode("status").InnerText;
+        if (sts == "OK")
+        {
+            try
+            {
+
+                string dist = xmlDoc.DocumentElement.SelectSingleNode("row/element/distance/value").InnerText;
+
+                if (dist != null)
+                {
+                    decimal distance = decimal.Parse(dist);
+                    distance = distance / 1000;
+                    distance = Math.Round(distance, 1, MidpointRounding.AwayFromZero);
+                    Row.Distance = distance;
+
+                    if (distance <= 20)
+                    {
+                        Row.DeliveryZone = 1;
+                    }
+                    else if (distance > 20 && distance <= 50)
+                    {
+                        Row.DeliveryZone = 2;
+                    }
+                    else if (distance > 50)
+                    {
+                        Row.DeliveryZone = 3;
+                    }
+                }
+            }
+            catch (Exception ex)
+            {
+                bool pbCancel = false;
+                this.ComponentMetaData.FireWarning(0, "Goggle Lookup[CRM_ID=" + Row.AccountGUID + "]", "Error message: " + ex.Message + "|  " + ex.InnerException.Message, String.Empty, 0);
+
+            }
+        }
+    }
 
 }
